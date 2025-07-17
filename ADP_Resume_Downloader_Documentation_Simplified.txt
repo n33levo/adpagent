@@ -1,0 +1,403 @@
+ADP Resume Downloader - Implementation Documentation
+Updated: July 8, 2025
+
+
+1. OVERVIEW
+
+The ADP Resume Downloader automates bulk downloading of candidate resumes from ADP Workforce Now using LangGraph workflow orchestration and Playwright browser automation.
+
+1.1 Technology Stack
+• LangGraph: Workflow orchestration
+• Playwright: Browser automation
+• AsyncIO: Concurrent processing
+• Pydantic: Data validation
+• aiohttp/aiofiles: Async HTTP and file operations
+
+
+2. WORKFLOW ARCHITECTURE
+
+The system implements a 6-node LangGraph workflow with the following flow:
+
+setup_browser → login → navigate_to_candidates → extract_candidates → download_resumes → cleanup
+
+2.1 Conditional Routing Logic
+• login → navigate_to_candidates (if successful) OR cleanup (if failed)
+• navigation → extract_candidates (if successful) OR cleanup (if failed)
+• extraction → download_resumes (if candidates found) OR cleanup (if none)
+• download_resumes → cleanup (always)
+
+3. IMPLEMENTATION DETAILS
+
+3.1 Workflow Orchestrator (workflow.py)
+
+3.1.1 WorkflowOrchestrator Class Methods
+
+setup_browser_node(state: WorkflowGraphState) → WorkflowGraphState
+Purpose: Initialize Playwright browser and create page context
+Implementation: Calls BrowserManager.setup_browser()
+Updates: state['browser_state'] with setup results
+Error Handling: Sets state to ERROR if browser setup fails
+
+login_node(state: WorkflowGraphState) → WorkflowGraphState
+Purpose: Navigate to ADP login page and authenticate
+Implementation:
+• Calls BrowserManager.navigate_to_login() with login URL
+• Calls BrowserManager.attempt_login() with credentials
+Updates: state['browser_state'] with login results
+Error Handling: Sets state to LOGIN_FAILED on authentication errors
+
+navigate_to_candidates_node(state: WorkflowGraphState) → WorkflowGraphState
+Purpose: Navigate from login success page to candidate listings
+Implementation: Calls BrowserManager.navigate_to_candidates()
+Updates: state['current_state'] based on navigation success
+Error Handling: Sets state to NAVIGATION_FAILED if navigation fails
+
+extract_candidates_node(state: WorkflowGraphState) → WorkflowGraphState
+Purpose: Extract candidate data from current and paginated pages
+Implementation:
+• Calls BrowserManager.extract_candidates_from_page() for each page
+• Calls BrowserManager.navigate_to_next_page() for pagination
+• Respects config['extraction']['max_pages'] limit
+Updates: state['candidates'] list and state['stats'].total_candidates
+Error Handling: Continues on individual page failures
+
+download_resumes_node(state: WorkflowGraphState) → WorkflowGraphState
+Purpose: Orchestrate parallel resume downloads for all candidates
+Implementation: Calls ResumeDownloader.download_all_resumes()
+Updates: state['stats'] with download success/failure counts
+Error Handling: Individual download failures don't stop workflow
+
+cleanup_node(state: WorkflowGraphState) → WorkflowGraphState
+Purpose: Release browser resources and finalize workflow state
+Implementation: Calls BrowserManager.cleanup()
+Updates: state['current_state'] to COMPLETED or ERROR based on results
+Always executed regardless of previous node outcomes
+
+3.1.2 Conditional Edge Functions
+
+should_continue_after_login(state) → str
+Returns "navigate_to_candidates" if LOGIN_SUCCESS, else "cleanup"
+
+should_continue_after_navigation(state) → str
+Returns "extract_candidates" if NAVIGATION_SUCCESS, else "cleanup"
+
+should_continue_after_extraction(state) → str
+Returns "download_resumes" if EXTRACTION_COMPLETE, else "cleanup"
+
+3.2 Browser Manager (browser.py)
+
+3.2.1 BrowserManager Class Methods
+
+setup_browser() → BrowserState
+Purpose: Initialize Playwright browser with Chromium
+Implementation:
+• Starts async_playwright()
+• Launches browser with headless config
+• Creates new context and page
+Returns: BrowserState with is_setup=True/False
+
+navigate_to_login(login_url: str) → BrowserState
+Purpose: Navigate to ADP login page
+Implementation:
+• Uses page.goto() with login URL
+• Waits for 'networkidle' load state
+Returns: BrowserState with current_url
+
+attempt_login(username: str, password: str) → tuple[LoginStatus, BrowserState]
+Purpose: Authenticate with ADP using provided credentials
+Implementation:
+• Detects username field using multiple selectors (sdf-input, input)
+• Handles ADP custom shadow DOM elements
+• Types username character-by-character with events
+• Finds and clicks Next button
+• Locates password field and enters password
+• Submits form and validates login success
+Returns: LoginStatus (SUCCESS/FAILED) and updated BrowserState
+Error Handling: Takes screenshots on failures, extensive logging
+
+navigate_to_candidates() → tuple[bool, list]
+Purpose: Navigate from post-login page to candidate listings
+Implementation:
+• Searches for navigation links using candidate/resume/talent patterns
+• Clicks found elements and validates navigation
+Returns: (success_boolean, empty_list)
+
+extract_candidates_from_page() → List[CandidateModel]
+Purpose: Extract candidate data from current page
+Implementation:
+• Uses multiple selectors to find candidate elements
+• Extracts name and profile URL from each element
+• Normalizes relative URLs to absolute URLs
+• Creates CandidateModel objects with unique IDs
+Returns: List of CandidateModel objects
+
+navigate_to_next_page() → bool
+Purpose: Navigate to next page in candidate pagination
+Implementation:
+• Looks for "Next" buttons/links using multiple selectors
+• Clicks if enabled and waits for page load
+Returns: True if navigation successful, False otherwise
+
+is_candidates_page() → bool
+Purpose: Validate current page contains candidate data
+Implementation: Checks page content for candidate/resume/employee keywords
+Returns: Boolean indicating if on correct page
+
+_is_logged_in() → bool
+Purpose: Verify successful authentication
+Implementation:
+• Checks URL for login indicators (signin.adp.com, /login)
+• Checks page content for login form elements
+• Looks for post-login indicators (dashboard, logout, etc.)
+Returns: True if logged in, False if still on login page
+
+cleanup() → None
+Purpose: Release all browser resources
+Implementation: Closes page, context, browser, and playwright
+
+3.3 Resume Downloader (downloader.py)
+
+3.3.1 ResumeDownloader Class Methods
+
+download_all_resumes(candidates, browser, config) → List[DownloadAttempt]
+Purpose: Orchestrate parallel downloads for all candidates
+Implementation:
+• Creates aiohttp session with timeout configuration
+• Uses asyncio.Semaphore for concurrency control
+• Creates download tasks for each candidate
+• Executes tasks with asyncio.gather()
+Returns: List of DownloadAttempt objects with results
+
+_download_candidate_resume(candidate, browser, download_dir, config, semaphore) → DownloadAttempt
+Purpose: Download resume for single candidate
+Implementation:
+• Navigates to candidate profile page
+• Calls _find_resume_download_url() to locate resume link
+• Downloads file using _download_file()
+• Validates PDF using _validate_pdf_file()
+Returns: DownloadAttempt with status and file path
+
+_find_resume_download_url(browser, candidate) → Optional[str]
+Purpose: Locate resume download URL on candidate profile
+Implementation:
+• Uses multiple selectors for resume links
+• Checks for .pdf file extensions
+• Converts relative URLs to absolute
+Returns: Download URL string or None
+
+_download_file(download_url, candidate, download_dir) → Path
+Purpose: Download file from URL to local directory
+Implementation:
+• Makes HTTP GET request using aiohttp session
+• Generates safe filename using _generate_safe_filename()
+• Handles filename conflicts with numeric suffixes
+• Writes file content asynchronously
+Returns: Path to downloaded file
+
+_validate_pdf_file(file_path) → bool
+Purpose: Verify downloaded file is valid PDF
+Implementation:
+• Checks file exists and size > 1KB
+• Validates PDF header (%PDF-)
+Returns: True if valid PDF, False otherwise
+
+_generate_safe_filename(candidate_name) → str
+Purpose: Create filesystem-safe filename from candidate name
+Implementation:
+• Filters to alphanumeric and safe characters
+• Replaces spaces with underscores
+• Truncates to 50 characters
+• Falls back to MD5 hash if no valid characters
+Returns: Safe filename string
+
+3.4 Data Models (models.py)
+
+3.4.1 Core Models
+
+WorkflowGraphState (TypedDict)
+Purpose: Central state container for LangGraph workflow
+Fields:
+• current_state: WorkflowState enum
+• error_message: Optional[str]
+• should_continue: bool
+• browser_state: BrowserState
+• candidates: List[CandidateModel]
+• stats: WorkflowStats
+• config: Dict[str, Any]
+
+CandidateModel (BaseModel)
+Purpose: Individual candidate data with processing status
+Fields:
+• id: str (unique identifier)
+• name: str (candidate name)
+• url: str (profile URL)
+• processed: bool (default False)
+• download_status: Optional[DownloadStatus]
+• download_path: Optional[Path]
+• retry_count: int (default 0)
+• error_message: Optional[str]
+Methods:
+• mark_processed(): Updates processing status and results
+
+BrowserState (BaseModel)
+Purpose: Browser session state tracking
+Fields:
+• is_setup: bool (default False)
+• current_url: Optional[str]
+• is_logged_in: bool (default False)
+• login_status: Optional[LoginStatus]
+• error_message: Optional[str]
+
+WorkflowStats (BaseModel)
+Purpose: Performance metrics and statistics
+Fields:
+• total_candidates: int (default 0)
+• successful_downloads: int (default 0)
+• failed_downloads: int (default 0)
+• start_time: Optional[datetime]
+• end_time: Optional[datetime]
+Methods:
+• start_workflow(): Sets start_time
+• end_workflow(): Sets end_time
+• success_rate property: Calculates percentage
+
+DownloadAttempt (Class)
+Purpose: Individual download result tracking
+Fields:
+• candidate_id: str
+• candidate_name: str
+• status: DownloadStatus
+• file_path: Optional[Path]
+• error_message: Optional[str]
+• timestamp: datetime
+
+3.4.2 Enums
+
+WorkflowState
+Values: INITIALIZED, BROWSER_SETUP, LOGIN_SUCCESS, LOGIN_FAILED, NAVIGATION_SUCCESS, NAVIGATION_FAILED, EXTRACTION_COMPLETE, DOWNLOAD_COMPLETE, CLEANUP_COMPLETE, ERROR, COMPLETED
+
+LoginStatus
+Values: SUCCESS, FAILED, TIMEOUT
+
+DownloadStatus
+Values: SUCCESS, FAILED, NOT_FOUND, TIMEOUT
+
+3.5 Configuration (config.py)
+
+3.5.1 Configuration Classes
+
+ADPConfig
+Fields: username, password, login_url
+
+DownloadConfig
+Fields: folder, max_concurrent, timeout_seconds, max_retries
+
+BrowserConfig
+Fields: headless, timeout_seconds
+
+ExtractionConfig
+Fields: max_pages, delay_seconds
+
+Config (Main)
+Combines all config classes
+Loads from environment variables using python-dotenv
+Provides defaults for optional settings
+
+3.5.2 Logging Setup
+• Dual output: File (resume_downloader.log) and console
+• Structured format with timestamps
+• Configurable levels (INFO, DEBUG, WARNING, ERROR)
+
+3.6 Main Entry Point (main.py)
+
+main() function
+Purpose: Execute complete workflow
+Implementation:
+• Creates initial state using create_initial_state()
+• Starts workflow timing
+• Creates and invokes LangGraph workflow
+• Logs final statistics and results
+Error Handling: Catches KeyboardInterrupt and general exceptions
+
+
+4. CONFIGURATION
+
+4.1 Required Environment Variables (.env)
+ADP_USERNAME=your_adp_username
+ADP_PASSWORD=your_adp_password
+ADP_LOGIN_URL=https://your-company.adp.com/workforce-now/login
+
+4.2 Optional Environment Variables
+DOWNLOAD_FOLDER=./downloads
+DOWNLOAD_MAX_CONCURRENT=3
+DOWNLOAD_TIMEOUT_SECONDS=120
+BROWSER_HEADLESS=false
+BROWSER_TIMEOUT_SECONDS=30
+EXTRACTION_MAX_PAGES=50
+EXTRACTION_DELAY_SECONDS=2
+
+5. INSTALLATION AND USAGE
+
+5.1 Setup Process
+1. Create virtual environment:
+   python -m venv .venv
+
+2. Activate virtual environment:
+   .venv\Scripts\activate
+
+3. Install dependencies:
+   pip install -r requirements.txt
+
+4. Install Playwright browser:
+   playwright install chromium
+
+5.2 Configuration
+Create .env file with ADP credentials as specified in section 4.
+
+5.3 Execution
+Run the workflow:
+python main.py
+
+5.4 Output
+• Downloads saved to configured folder (default: ./downloads)
+• Logs written to resume_downloader.log and console
+• Statistics displayed at completion
+
+
+6. TROUBLESHOOTING
+
+6.1 Authentication Failures
+• Verify credentials in .env file
+• Check ADP_LOGIN_URL points to correct login page
+• Review login screenshots (login_page_initial.png, login_failed.png)
+
+6.2 Element Not Found Errors
+• Set BROWSER_HEADLESS=false to observe browser
+• Update selectors in browser.py for your ADP instance
+• Check ADP interface changes
+
+6.3 Download Failures
+• Verify network connectivity
+• Reduce DOWNLOAD_MAX_CONCURRENT if server overloaded
+• Check user permissions for resume access
+
+6.4 Performance Issues
+• Reduce concurrency for limited resources
+• Increase timeouts for slower networks
+• Enable headless mode for production
+
+
+7. FILE STRUCTURE
+
+Project directory layout:
+
+langgraph/
+├── main.py              # Entry point and workflow execution
+├── workflow.py          # LangGraph workflow orchestration
+├── browser.py           # Playwright browser automation
+├── downloader.py        # Parallel resume downloading
+├── models.py            # Pydantic data models and enums
+├── config.py            # Configuration management
+├── requirements.txt     # Python dependencies
+├── .env                # Environment variables (create this)
+└── downloads/          # Resume download directory

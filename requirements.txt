@@ -1,0 +1,9 @@
+langchain
+langchain-openai
+langgraph
+playwright
+python-dotenv
+pydantic
+aiohttp
+aiofiles
+beautifulsoup4

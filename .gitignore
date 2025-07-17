@@ -1,0 +1,43 @@
+# Python bytecode and cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Environment variables
+.env
+.env.*
+
+# Playwright browser binaries
+playwright/.cache/
+
+# Downloads
+downloads/
+
+# VS Code settings
+.vscode/
+
+# Test and coverage outputs
+htmlcov/
+.coverage
+coverage.xml
+
+# Jupyter Notebooks checkpoints
+.ipynb_checkpoints/
+
+# Misc
+*.swp
+*.bak
+*.tmp
