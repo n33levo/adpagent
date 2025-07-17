@@ -302,26 +302,4 @@ async def send_completion_notification(stats: WorkflowStats):
     pass
 ```
 
-## 🔐 Security & Compliance
 
-### Data Protection
-- **Credential Management**: Environment variable isolation prevents credential exposure in code
-- **Memory Safety**: Sensitive data cleared from memory after use, no credential logging
-- **File System Security**: Configurable download directories with proper permission management
-- **Network Security**: HTTPS enforcement, certificate validation, secure session management
-
-### Compliance Considerations
-- **Access Control**: Verify user permissions for candidate data access before deployment
-- **Data Retention**: Configure automatic cleanup of downloaded files per retention policies
-- **Audit Logging**: Comprehensive activity logs for compliance and security monitoring
-- **Rate Limiting**: Built-in delays prevent server overload and respect usage policies
-
-### Production Deployment
-- **Environment Isolation**: Separate configuration files for development/staging/production
-- **Secret Management**: Integration with secure secret management systems (AWS Secrets Manager, Azure Key Vault)
-- **Monitoring Integration**: Compatible with enterprise monitoring solutions (New Relic, DataDog)
-- **Error Alerting**: Configurable failure notifications for production monitoring
-
----
-
-**Security Notice**: This automation tool requires valid ADP Workforce Now credentials and appropriate access permissions. Ensure compliance with your organization's data access policies and applicable privacy regulations before deployment.
