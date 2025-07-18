@@ -12,6 +12,114 @@ from config import CONFIG, LOGGER
 from models import BrowserState, LoginStatus, CandidateModel
 
 class BrowserManager:
+    async def navigate_to_recruitment_page(self):
+        """
+        Navigates directly to the ADP Recruitment page after login.
+        """
+        recruitment_url = "https://workforcenow.adp.com/theme/index.html#/Process/ProcessTabTalentCategoryRecruitment"
+        LOGGER.info(f"Navigating to recruitment page: {recruitment_url}")
+        await self.page.goto(recruitment_url)
+        await self.page.wait_for_load_state('networkidle')
+        # Removed unnecessary sleep
+        return True
+
+    async def select_candidates_tab(self):
+        """
+        Ensures the Candidates tab is selected (not Requisitions).
+        """
+        try:
+            LOGGER.info("Selecting Candidates tab if not already selected")
+            tab_selectors = [
+                'button:has-text("Candidates")',
+                'a:has-text("Candidates")',
+                '[role="tab"]:has-text("Candidates")',
+                '[data-automation-id="tab-candidates"]',
+                '.tab:has-text("Candidates")',
+            ]
+            for selector in tab_selectors:
+                try:
+                    tab = await self.page.wait_for_selector(selector, timeout=1000)
+                    if tab:
+                        await tab.click()
+                        await self.page.wait_for_load_state('networkidle')
+                        # Removed unnecessary sleep
+                        LOGGER.info("Candidates tab selected")
+                        return True
+                except Exception:
+                    continue
+            LOGGER.warning("Candidates tab not found or already selected")
+            return False
+        except Exception as e:
+            LOGGER.error(f"Error selecting Candidates tab: {str(e)}")
+            return False
+
+    async def navigate_to_candidates(self) -> tuple[bool, list]:
+        try:
+            # Step 1: Go to recruitment page
+            await self.navigate_to_recruitment_page()
+            # Step 2: Click Candidates tab
+            await self.select_candidates_tab()
+            # Step 3: Confirm we are on the candidates page
+            if await self.is_candidates_page():
+                LOGGER.info("Navigation to candidates page successful")
+                return True, []
+            else:
+                LOGGER.error("Not on candidates page after navigation")
+                return False, []
+        except Exception as e:
+            LOGGER.error(f"Navigation error: {str(e)}")
+            return False, []
+
+    async def extract_candidates_from_page(self) -> List[CandidateModel]:
+        try:
+            LOGGER.info("Extracting candidates from current page with Req# and Job Title")
+            candidates = []
+            rows = await self.page.query_selector_all('tr')
+            for row in rows:
+                try:
+                    name_el = await row.query_selector('a')
+                    name = (await name_el.inner_text()).strip() if name_el else None
+                    cells = await row.query_selector_all('td')
+                    req_job = None
+                    if len(cells) > 1:
+                        req_job = (await cells[1].inner_text()).strip()
+                    url = await name_el.get_attribute('href') if name_el else None
+                    if name and req_job and url:
+                        candidates.append(CandidateModel(
+                            id=f"{req_job}_{name}",
+                            name=name,
+                            url=url,
+                            req_job_title=req_job
+                        ))
+                except Exception:
+                    continue
+            LOGGER.info(f"Found {len(candidates)} candidates on page")
+            return candidates
+        except Exception as e:
+            LOGGER.error(f"Candidate extraction error: {str(e)}")
+            return []
+
+    async def click_clip_icon_and_prepare_resume(self, row):
+        """
+        Clicks the clip icon for a candidate row to open the resume window.
+        """
+        try:
+            clip_icon = await row.query_selector('svg[aria-label*="clip"]')
+            if clip_icon:
+                await clip_icon.click()
+                # Reduced sleep for faster UI
+                await asyncio.sleep(0.5)
+                LOGGER.info("Clip icon clicked, resume window should be open")
+                return True
+            else:
+                LOGGER.warning("Clip icon not found for candidate row")
+                return False
+        except Exception as e:
+            LOGGER.error(f"Error clicking clip icon: {str(e)}")
+            return False
+    async def _debug_form_state(self):
+        # No-op debug method to prevent AttributeError
+        pass
     def __init__(self):
         self.playwright = None
         self.browser: Optional[Browser] = None
@@ -532,6 +640,53 @@ class BrowserManager:
             # Wait for login to complete
             await asyncio.sleep(5)
             await self.page.wait_for_load_state("networkidle")
+
+            # Handle optional MFA step: send verification email, enter code, and verify
+            try:
+                LOGGER.info("Checking for MFA prompt ('Send me an email')")
+                await self.page.wait_for_selector('text="Send me an email"', timeout=10000)
+                await self.page.screenshot(path="mfa_prompt.png")
+                LOGGER.info("MFA detected: clicking 'Send me an email'")
+                await self.page.click('text="Send me an email"')
+                # Wait for code input field to appear
+                code_field = await self.page.wait_for_selector('input[type="text"]', timeout=60000)
+                await self.page.screenshot(path="mfa_input.png")
+                # Prompt user for the MFA code
+                code = await asyncio.to_thread(input, "Enter the MFA code sent to your email: ")
+                await code_field.fill(code)
+                await self.page.screenshot(path="mfa_code_filled.png")
+                # Click verify/continue button if present
+                locator = self.page.locator('text="Verify"')
+                if await locator.is_visible():
+                    await locator.click()
+                await self.page.wait_for_load_state("networkidle", timeout=15000)
+                LOGGER.info("MFA verification complete")
+            except Exception as e:
+                LOGGER.info(f"No MFA step encountered or error: {e}")
+            
+            # Handle optional MFA step: click "Send me an email", prompt user for code, and verify
+            try:
+                LOGGER.info("Checking for MFA prompt (Send me an email)")
+                mfa_button = await self.page.wait_for_selector('button:has-text("Send me an email")', timeout=5000)
+                if mfa_button:
+                    LOGGER.info("MFA detected: sending verification code via email")
+                    await mfa_button.click()
+                    # Prompt user for verification code
+                    code = await asyncio.to_thread(input, "Enter the MFA verification code sent to your email: ")
+                    # Fill in verification code
+                    code_field = await self.page.wait_for_selector('input[type="text"]', timeout=60000)
+                    await code_field.fill(code)
+                    # Click verify button
+                    verify_button = await self.page.wait_for_selector('button:has-text("Verify")', timeout=10000)
+                    if verify_button:
+                        await verify_button.click()
+                    # Wait for post-MFA navigation
+                    await self.page.wait_for_load_state("networkidle", timeout=15000)
+                    LOGGER.info("MFA verification complete")
+                else:
+                    LOGGER.info("No MFA button found, proceeding")
+            except Exception as e:
+                LOGGER.info(f"No MFA step encountered or MFA timeout: {e}")
             
             # Verify login success
             if await self._is_logged_in():

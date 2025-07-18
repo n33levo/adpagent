@@ -34,9 +34,11 @@ class DownloadStatus(Enum):
     TIMEOUT = "timeout"
 
 class CandidateModel(BaseModel):
+
     id: str
     name: str
     url: str
+    req_job_title: Optional[str] = None  # New: Req# - Job Title for folder naming
     processed: bool = False
     download_status: Optional[DownloadStatus] = None
     download_path: Optional[Path] = None

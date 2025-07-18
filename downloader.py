@@ -38,38 +38,44 @@ class ResumeDownloader:
         if not candidates:
             return []
 
-        LOGGER.info(f"Starting download process for {len(candidates)} candidates")
-        
-        download_dir = Path(config['download']['folder'])
-        download_dir.mkdir(parents=True, exist_ok=True)
-        
+        # Limit to 10 resumes per session
+        candidates = candidates[:10]
+        LOGGER.info(f"Starting download process for {len(candidates)} candidates (max 10 per session)")
+
         timeout = aiohttp.ClientTimeout(total=config['download']['timeout_seconds'])
-        
+
         async with aiohttp.ClientSession(timeout=timeout) as session:
             self.session = session
-            
+
             semaphore = asyncio.Semaphore(config['download']['max_concurrent'])
-            
             tasks = []
             for candidate in candidates:
+                req_job = candidate.req_job_title or "Unknown_Req_Job"
+                folder = Path(config['download']['folder']) / req_job
+                folder.mkdir(parents=True, exist_ok=True)
+                safe_name = self._generate_safe_filename(candidate.name)
+                file_path = folder / f"{safe_name}.pdf"
+                if file_path.exists():
+                    LOGGER.info(f"Resume for {candidate.name} already exists in {req_job}, skipping download.")
+                    candidate.mark_processed(DownloadStatus.SUCCESS, file_path)
+                    continue
                 task = self._download_candidate_resume(
-                    candidate, browser, download_dir, config, semaphore
+                    candidate, browser, folder, config, semaphore
                 )
                 tasks.append(task)
-            
+
             results = await asyncio.gather(*tasks, return_exceptions=True)
-            
-            # Filter out exceptions and convert to DownloadAttempt objects
+
             valid_results = []
             for result in results:
                 if isinstance(result, DownloadAttempt):
                     valid_results.append(result)
                 elif isinstance(result, Exception):
                     LOGGER.error(f"Download task failed: {str(result)}")
-        
+
         successful = sum(1 for r in valid_results if r.status == DownloadStatus.SUCCESS)
         LOGGER.info(f"Download completed: {successful}/{len(valid_results)} successful")
-        
+
         return valid_results
 
     async def _download_candidate_resume(
@@ -85,20 +91,34 @@ class ResumeDownloader:
                 # Navigate to candidate profile
                 await browser.page.goto(candidate.url)
                 await browser.page.wait_for_load_state('networkidle')
-                
+                await asyncio.sleep(1)
+
+                # Click the clip icon to open the resume window (if available)
+                rows = await browser.page.query_selector_all('tr')
+                for row in rows:
+                    name_el = await row.query_selector('a')
+                    name = (await name_el.inner_text()).strip() if name_el else None
+                    if name == candidate.name:
+                        # Try to click the clip icon
+                        clip_icon = await row.query_selector('svg[aria-label*="clip"]')
+                        if clip_icon:
+                            await clip_icon.click()
+                            await asyncio.sleep(2)
+                        break
+
                 # Find resume download link
                 download_url = await self._find_resume_download_url(browser, candidate)
-                
+
                 if not download_url:
                     return DownloadAttempt(
                         candidate.id, candidate.name, 
                         DownloadStatus.NOT_FOUND, 
                         error_message="Resume download URL not found"
                     )
-                
+
                 # Download the file
                 file_path = await self._download_file(download_url, candidate, download_dir)
-                
+
                 if await self._validate_pdf_file(file_path):
                     candidate.mark_processed(DownloadStatus.SUCCESS, file_path)
                     LOGGER.info(f"✓ Downloaded resume for {candidate.name}")
@@ -109,7 +129,7 @@ class ResumeDownloader:
                         DownloadStatus.FAILED, 
                         error_message="File validation failed"
                     )
-                    
+
             except Exception as e:
                 error_message = str(e)
                 candidate.mark_processed(DownloadStatus.FAILED, error=error_message)
