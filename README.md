@@ -2,8 +2,6 @@
 
 Enterprise-grade automation system for bulk downloading candidate resume PDFs from ADP Workforce Now. Built with LangGraph state machine architecture for reliable workflow orchestration and Playwright for robust browser automation.
 
-## 🚀 Quick Start
-
 ### 1. Setup
 
 ```bash
